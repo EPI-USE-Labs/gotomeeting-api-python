@@ -1,14 +1,8 @@
 import requests
-import chronyk
-import toml
 import msgpack
 from pathlib import Path
-import os
-import sys
 import datetime
 import base64
-import logging
-import time
 from queue import Queue
 
 from flask import Flask, escape, request
