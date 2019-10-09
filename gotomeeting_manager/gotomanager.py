@@ -4,12 +4,15 @@ from pathlib import Path
 import datetime
 import base64
 from queue import Queue
+import os
 
 from flask import Flask, escape, request
 import webbrowser
 
 from typing import List, Dict, Optional
-from gotomeeting_manager.gotoexceptions import HTTPError
+from gotomeeting_manager.gotoexceptions import CredentialError, HTTPError400, HTTPError403, HTTPError404, \
+    HTTPError409, HTTPError500, HTTPError502
+
 from gotomeeting_manager.goto_auth_server import AuthServerThread
 from gotomeeting_manager.gotoresponses import UserResponse
 
@@ -19,11 +22,23 @@ class Manager:
     _config = {
         "access_token": str,
         "refresh_token": str,
-        "last_refreshed": datetime.datetime
+        "last_refreshed": str
     }
     _config_path: str
 
-    def __init__(self, consumer_key: str, consumer_secret: str, path_to_config: str = "./gototokens.creds"):
+    def __init__(self, consumer_key: Optional[str] = None, consumer_secret: Optional[str] = None,
+                 path_to_config: str = "./goto.creds"):
+
+        if consumer_key is None:
+            consumer_key = os.environ.get("GOTO_CONSUMER_KEY")
+            if consumer_key is None:
+                raise CredentialError("'Consumer Key' not specified and not set in $GOTO_CONSUMER_KEY")
+
+        if consumer_secret is None:
+            consumer_secret = os.environ.get("GOTO_CONSUMER_SECRET")
+            if consumer_secret is None:
+                raise CredentialError("'Consumer Secret' not specified and not set in $GOTO_CONSUMER_SECRET")
+
         self._consumer_key = consumer_key
         self._consumer_secret = consumer_secret
         self._config_path = path_to_config
@@ -35,8 +50,9 @@ class Manager:
         config_file = Path(self._config_path)
         if config_file.exists():
             # Open project specific config
-            with open(config_file, "r") as file:
-                self._config = msgpack.unpack(file)
+            with open(config_file, "rb") as file:
+                self._config = msgpack.unpack(stream=file, raw=False)
+                print(self._config)
 
         else:
             print("Tokens not found!")
@@ -45,13 +61,14 @@ class Manager:
 
     def _dump_config(self):
         config_file = Path(self._config_path)
-        with open(config_file, "w+") as file:
-            msgpack.pack(self._config, file)
+        with open(config_file, "wb+") as file:
+            msgpack.pack(o=self._config, stream=file)
 
     # TOKEN API CALLS
 ########################################################################################################################
 
     def _cold_start(self):
+        print("Performing cold start")
         auth_code = self._get_auth_token()
         self._request_tokens(auth_code=auth_code)
 
@@ -114,18 +131,19 @@ class Manager:
         r = requests.post(url=base_url, headers=headers, data=data)
 
         if r.status_code != 200:
-            raise HTTPError(r.text)
+            raise self._manage_exceptions(r.status_code)(r.text)
 
         self._config["access_token"] = r.json()["access_token"]
         self._config["refresh_token"] = r.json()["refresh_token"]
-        self._config["last_refreshed"] = datetime.datetime.now()
+        self._config["last_refreshed"] = datetime.datetime.now().strftime("%m/%d/%Y, %H:%M:%S")
 
         self._dump_config()
 
     def _refresh_tokens(self, force_refresh: bool = False):
 
         # Calculate time since last refresh
-        time_since_refresh = (datetime.datetime.now() - self._config["last_refreshed"]).seconds
+        time_since_refresh = (datetime.datetime.now() -
+                              datetime.datetime.strptime(self._config["last_refreshed"], "%m/%d/%Y, %H:%M:%S")).seconds
 
         # Check whether tokens have been refreshed within the last 25 days and performs cold start if not
         # Can also be overridden with the force_refresh flag
@@ -134,6 +152,8 @@ class Manager:
 
         # Check whether tokens have been refreshed in the last 45 minutes and refreshes them if not
         elif time_since_refresh >= 2700:
+            print("Refreshing access token")
+
             encoded_tokens = base64.b64encode(bytes(f"{self._consumer_key}:{self._consumer_secret}", "utf-8"))
 
             base_url = "https://api.getgo.com/oauth/v2/token"
@@ -152,11 +172,11 @@ class Manager:
             r = requests.post(url=base_url, headers=headers, data=data)
 
             if r.status_code != 200:
-                raise HTTPError(r.text)
+                raise self._manage_exceptions(r.status_code)(r.text)
 
             self._config["access_token"] = r.json()["access_token"]
             self._config["refresh_token"] = r.json()["refresh_token"]
-            self._config["last_refreshed"] = datetime.datetime.now()
+            self._config["last_refreshed"] = datetime.datetime.now().strftime(" %m/%d/%Y, %H:%M:%S")
 
             self._dump_config()
 
@@ -191,10 +211,14 @@ class Manager:
             "productType": products
         }
 
+        print(f"Base URL: {base_url}")
+        print(f"Headers: {headers}")
+        print(f"Data {data}")
+
         r = requests.post(url=base_url, headers=headers, json=data)
 
-        if r.status_code != 200:
-            raise HTTPError(r.text)
+        if r.status_code != 201:
+            raise self._manage_exceptions(r.status_code)(r.text)
 
         try:
             key = r.json()["key"]
@@ -220,9 +244,9 @@ class Manager:
         r = requests.get(url=base_url, headers=headers, params=parameters)
 
         if r.status_code != 200:
-            raise HTTPError(r.text)
-
-        return UserResponse.create_from_response(r.json())
+            raise self._manage_exceptions(r.status_code)(r.text)
+        print(r.json())
+        return UserResponse.create_from_response(r.json()[0])
 
     def get_user_by_key(self, key: str) -> UserResponse:
 
@@ -240,7 +264,7 @@ class Manager:
         r = requests.get(url=base_url, headers=headers, params=parameters)
 
         if r.status_code != 200:
-            raise HTTPError(r.text)
+            raise self._manage_exceptions(r.status_code)(r.text)
 
         return UserResponse.create_from_response(r.json())
 
@@ -259,7 +283,7 @@ class Manager:
         r = requests.get(url=base_url, headers=headers, params=parameters)
 
         if r.status_code != 200:
-            raise HTTPError(r.text)
+            raise self._manage_exceptions(r.status_code)(r.text)
 
         users = []
 
@@ -282,7 +306,7 @@ class Manager:
         r = requests.get(url=base_url, headers=headers)
 
         if r.status_code != 200:
-            raise HTTPError(r.text)
+            raise self._manage_exceptions(r.status_code)(r.text)
 
         return r.json()
 
@@ -314,8 +338,8 @@ class Manager:
 
         r = requests.post(url=base_url, headers=headers, json=data)
 
-        if r.status_code != 200:
-            raise HTTPError(r.text)
+        if r.status_code != 201:
+            raise self._manage_exceptions(r.status_code)(r.text)
 
         return r
 
@@ -335,8 +359,8 @@ class Manager:
 
         r = requests.delete(url=base_url, headers=headers)
 
-        if r.status_code != 200:
-            raise HTTPError(r.text)
+        if r.status_code != 204:
+            raise self._manage_exceptions(r.status_code)(r.text)
 
         return r.json()
 
@@ -362,7 +386,7 @@ class Manager:
         r = requests.put(url=base_url, data=data, headers=headers)
 
         if r.status_code != 200:
-            raise HTTPError(r.text)
+            raise self._manage_exceptions(r.status_code)(r.text)
 
         return r.json()
 
@@ -388,9 +412,23 @@ class Manager:
         r = requests.put(url=base_url, data=data, headers=headers)
 
         if r.status_code != 200:
-            raise HTTPError(r.text)
+            raise self._manage_exceptions(r.status_code)(r.text)
 
         return r.json()
+
+    # TOKEN API CALLS
+########################################################################################################################
+
+    def _manage_exceptions(self, code):
+        exceptions = {
+            "400": HTTPError400,
+            "403": HTTPError403,
+            "404": HTTPError404,
+            "409": HTTPError409,
+            "500": HTTPError500,
+            "502": HTTPError502,
+        }
+        return exceptions[code]
 
     # TODO - Add more functionality to Python API
     # TODO - Finish testing the API

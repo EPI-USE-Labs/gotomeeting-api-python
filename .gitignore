@@ -104,4 +104,8 @@ venv.bak/
 .mypy_cache/
 
 # Additional files
+simple_test.py
+*.creds
 
+# Jetbrains
+.idea/
