@@ -6,7 +6,6 @@ class UserResponse:
 
     def __init__(self, first_name, last_name, email, group_id, status, organizer_key, products,
                  max_num_attendees_allowed):
-
         self.first_name = first_name
         self.last_name = last_name
         self.email = email
@@ -17,24 +16,36 @@ class UserResponse:
         self. max_num_attendees_allowed = max_num_attendees_allowed
 
     @classmethod
-    def create_from_response(cls, response_data: Dict):
-
+    def create_from_dict(cls, user_data: Dict):
+        first_name = user_data["firstName"]
+        last_name = user_data["lastName"]
+        email = user_data["email"]
+        group_id = user_data["groupId"]
+        status = user_data["status"]
+        organizer_key = user_data["organizerKey"]
         try:
-            first_name = response_data["firstName"]
-            last_name = response_data["lastName"]
-            email = response_data["email"]
-            group_id = response_data["groupId"]
-            status = response_data["status"]
-            organizer_key = response_data["organizerKey"]
-            products = response_data["products"]
-            max_num_attendees_allowed = response_data["maxNumAttendeesAllowed"]
-
-            return cls(first_name=first_name, last_name=last_name, email=email, group_id=group_id, status=status,
-                       organizer_key=organizer_key, products=products,
-                       max_num_attendees_allowed=max_num_attendees_allowed)
-
+            products = user_data["products"]
         except KeyError:
-            return None
+            products = ""
+        max_num_attendees_allowed = user_data["maxNumAttendeesAllowed"]
+
+        return cls(first_name=first_name, last_name=last_name, email=email, group_id=group_id, status=status,
+                   organizer_key=organizer_key, products=products,
+                   max_num_attendees_allowed=max_num_attendees_allowed)
+
+    def to_dict(self) -> Dict:
+        user = {
+            "first_name": self.first_name,
+            "last_name": self.last_name,
+            "email": self.email,
+            "group_id": self.group_id,
+            "status": self.status,
+            "organizer_key": self.organizer_key,
+            "products": self.products,
+            "max_num_attendees_allowed": self.max_num_attendees_allowed
+        }
+
+        return user
 
 
 class GroupResponse:
@@ -47,17 +58,24 @@ class GroupResponse:
         self. num_organizers = num_organizers
 
     @classmethod
-    def create_from_response(cls, response_data: Dict):
+    def create_from_dict(cls, group_data: Dict):
+        group_key = group_data["groupkey"]
+        group_name = group_data["groupName"]
+        parent_key = group_data["parentKey"]
+        status = group_data["status"]
+        num_organizers = group_data["numOrganizers"]
 
-        try:
-            group_key = response_data["groupKey"]
-            group_name = response_data["groupName"]
-            parent_key = response_data["parentKey"]
-            status = response_data["status"]
-            num_organizers = response_data["numOrganizers"]
+        return cls(group_key=group_key, group_name=group_name, parent_key=parent_key, status=status,
+                   num_organizers=num_organizers)
 
-            return cls(group_key=group_key, group_name=group_name, parent_key=parent_key, status=status,
-                       num_organizers=num_organizers)
+    def to_dict(self) -> Dict:
+        group = {
+            "group_key": self.group_key,
+            "group_name": self.group_name,
+            "parent_key": self.parent_key,
+            "status": self.status,
+            "num_organizers": self.num_organizers
+        }
 
-        except KeyError:
-            return None
+        return group
+

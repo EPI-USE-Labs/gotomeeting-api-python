@@ -11,10 +11,10 @@ import webbrowser
 
 from typing import List, Dict, Optional
 from gotomeeting_manager.gotoexceptions import CredentialError, HTTPError400, HTTPError403, HTTPError404, \
-    HTTPError409, HTTPError500, HTTPError502
+    HTTPError409, HTTPError500, HTTPError502, UserNotFoundError, GroupNotFoundError
 
 from gotomeeting_manager.goto_auth_server import AuthServerThread
-from gotomeeting_manager.gotoresponses import UserResponse
+from gotomeeting_manager.gotoresponses import UserResponse, GroupResponse
 
 
 class Manager:
@@ -52,7 +52,6 @@ class Manager:
             # Open project specific config
             with open(config_file, "rb") as file:
                 self._config = msgpack.unpack(stream=file, raw=False)
-                print(self._config)
 
         else:
             print("Tokens not found!")
@@ -110,19 +109,23 @@ class Manager:
 
         except TimeoutError:
             server.shutdown()
-            print("Could not receive the code")
+            print("Timeout reached. Could not receive the code.")
 
         except Exception:
             server.shutdown()
 
     def _request_tokens(self, auth_code: str):
+
         encoded_tokens = base64.b64encode(bytes(f"{self._consumer_key}:{self._consumer_secret}", "utf-8"))
+
         base_url = "https://api.getgo.com/oauth/v2/token"
+
         headers = {
             "Authorization": "Basic " + str(encoded_tokens, encoding="utf-8"),
             "Accept": "application/json",
             "Content-Type": "application/x-www-form-urlencoded",
         }
+
         data = {
             "grant_type": "authorization_code",
             "code": auth_code
@@ -176,23 +179,20 @@ class Manager:
 
             self._config["access_token"] = r.json()["access_token"]
             self._config["refresh_token"] = r.json()["refresh_token"]
-            self._config["last_refreshed"] = datetime.datetime.now().strftime(" %m/%d/%Y, %H:%M:%S")
+            self._config["last_refreshed"] = datetime.datetime.now().strftime("%m/%d/%Y, %H:%M:%S")
 
             self._dump_config()
 
     def create_user(self, first_name: str, last_name: str, email: str,
-                    products: Optional[List] = None) -> Optional[UserResponse]:
+                    product: str = "G2M") -> Optional[UserResponse]:
         """
         Create a user
         :param first_name: The user's first name
         :param last_name: The user's last name
         :param email: The user's email
-        :param products: Optional list containing all the products to assign to the user. Defaults to "G2M" only
+        :param product: Optional list containing all the products to assign to the user. Defaults to "G2M" only
         :return:
         """
-
-        if products is None:
-            products = ["G2M"]
 
         self._refresh_tokens()
 
@@ -208,12 +208,8 @@ class Manager:
             "organizerEmail": email,
             "firstName": first_name,
             "lastName": last_name,
-            "productType": products
+            "productType": product
         }
-
-        print(f"Base URL: {base_url}")
-        print(f"Headers: {headers}")
-        print(f"Data {data}")
 
         r = requests.post(url=base_url, headers=headers, json=data)
 
@@ -221,7 +217,7 @@ class Manager:
             raise self._manage_exceptions(r.status_code)(r.text)
 
         try:
-            key = r.json()["key"]
+            key = r.json()[0]["key"]
         except KeyError:
             return None
 
@@ -243,56 +239,65 @@ class Manager:
 
         r = requests.get(url=base_url, headers=headers, params=parameters)
 
+        if r.status_code == 404:
+            raise UserNotFoundError
+
         if r.status_code != 200:
             raise self._manage_exceptions(r.status_code)(r.text)
-        print(r.json())
-        return UserResponse.create_from_response(r.json()[0])
+
+        return UserResponse.create_from_dict(r.json()[0])
 
     def get_user_by_key(self, key: str) -> UserResponse:
 
         self._refresh_tokens()
 
-        base_url = "https://api.getgo.com/G2M/rest/organizers"
+        base_url = f"https://api.getgo.com/G2M/rest/organizers/{key}"
+
         headers = {
             "Accept": "application/json",
             "Authorization": self._config["access_token"]
         }
-        parameters = {
-            "organizerKey": key
-        }
 
-        r = requests.get(url=base_url, headers=headers, params=parameters)
+        r = requests.get(url=base_url, headers=headers)
+
+        if r.status_code == 404:
+            raise UserNotFoundError
 
         if r.status_code != 200:
             raise self._manage_exceptions(r.status_code)(r.text)
 
-        return UserResponse.create_from_response(r.json())
+        return UserResponse.create_from_dict(r.json()[0])
 
     def get_all_users(self) -> List[UserResponse]:
         self._refresh_tokens()
 
         base_url = "https://api.getgo.com/G2M/rest/organizers"
+
         headers = {
             "Accept": "application/json",
             "Authorization": self._config["access_token"]
         }
+
         parameters = {
             "email": ""
         }
 
         r = requests.get(url=base_url, headers=headers, params=parameters)
 
+        if r.status_code == 404:
+            raise UserNotFoundError
+
         if r.status_code != 200:
             raise self._manage_exceptions(r.status_code)(r.text)
 
         users = []
 
-        for result in r.json():
-            users.append(UserResponse.create_from_response(result))
+        for response in r.json():
+            users.append(UserResponse.create_from_dict(user_data=response))
 
         return users
 
-    def get_groups(self) -> Dict:
+    def get_groups(self) -> List[GroupResponse]:
 
         self._refresh_tokens()
 
@@ -308,18 +313,25 @@ class Manager:
         if r.status_code != 200:
             raise self._manage_exceptions(r.status_code)(r.text)
 
-        return r.json()
+        groups = []
+
+        for response in r.json():
+            groups.append(GroupResponse.create_from_dict(group_data=response))
+
+        return groups
 
     def create_user_in_group(self, first_name: str, last_name: str, email: str, group_name: str,
-                             product: str = "G2M") -> requests.Response:
+                             product: str = "G2M") -> UserResponse:
         self._refresh_tokens()
 
         groups = self.get_groups()
-        try:
-            group_key = groups[group_name]
-        except KeyError:
-            print("No group found matching the specified group name.")
-            return
+        group_key = None
+        for group in groups:
+            if group.group_name == group_name:
+                group_key = group.group_key
+
+        if group_key is None:
+            raise GroupNotFoundError
 
         base_url = "https://api.getgo.com/G2M/rest/groups/" + str(group_key) + "/organizers"
 
@@ -341,14 +353,21 @@ class Manager:
         if r.status_code != 201:
             raise self._manage_exceptions(r.status_code)(r.text)
 
-        return r
+        try:
+            key = r.json()[0]["key"]
+        except KeyError:
+            raise UserNotFoundError
 
-    def delete_user(self, user_email: str) -> requests.Response:
+        user = self.get_user_by_key(key=key)
+
+        return user
+
+    def delete_user(self, email: str) -> requests.Response:
 
         self._refresh_tokens()
 
         # Get the requested user's key using the provided email
-        user_key = self.get_user_by_email(user_email)[0]["organizerKey"]
+        user_key = self.get_user_by_email(email).organizer_key
 
         base_url = "https://api.getgo.com/G2M/rest/organizers/" + str(user_key)
 
@@ -362,14 +381,14 @@ class Manager:
         if r.status_code != 204:
             raise self._manage_exceptions(r.status_code)(r.text)
 
-        return r.json()
+        return r
 
-    def suspend_user(self, user_email: str, force_refresh: bool = False) -> Dict:
+    def suspend_user(self, email: str, force_refresh: bool = False) -> UserResponse:
 
         self._refresh_tokens(force_refresh=force_refresh)
 
         # Get the requested user's key using the provided email
-        user_key = self.get_user_by_email(email=user_email)
+        user_key = self.get_user_by_email(email=email).organizer_key
 
         base_url = f"https://api.getgo.com/G2M/rest/organizers/{user_key}"
 
@@ -381,20 +400,21 @@ class Manager:
 
         data = {
             "status": "suspended",
+            "productType": "G2M"
         }
 
-        r = requests.put(url=base_url, data=data, headers=headers)
+        r = requests.put(url=base_url, headers=headers, json=data)
 
-        if r.status_code != 200:
+        if r.status_code != 204:
             raise self._manage_exceptions(r.status_code)(r.text)
 
-        return r.json()
+        return self.get_user_by_email(email=email)
 
-    def update_user_products(self, user_email: str, products: List[str]) -> Dict:
+    def update_user_products(self, email: str, products: List[str]) -> UserResponse:
 
         self._refresh_tokens()
 
-        user_key = self.get_user_by_email(email=user_email)
+        user_key = self.get_user_by_email(email=email).organizer_key
 
         base_url = f"https://api.getgo.com/G2M/rest/organizers/{user_key}"
 
@@ -404,31 +424,29 @@ class Manager:
             "Authorization": self._config["access_token"]
         }
 
-        data = {
-            "status": "active",
-            "products": products
-        }
+        for product in products:
+            data = {
+                "productType": str(product)
+            }
 
-        r = requests.put(url=base_url, data=data, headers=headers)
+            r = requests.put(url=base_url, headers=headers, json=data)
 
-        if r.status_code != 200:
-            raise self._manage_exceptions(r.status_code)(r.text)
+            if r.status_code != 204:
+                raise self._manage_exceptions(r.status_code)(r.text)
 
-        return r.json()
+        return self.get_user_by_email(email=email)
 
-    # TOKEN API CALLS
+    # MANAGE EXCEPTIONS
 ########################################################################################################################
 
     def _manage_exceptions(self, code):
         exceptions = {
-            "400": HTTPError400,
-            "403": HTTPError403,
-            "404": HTTPError404,
-            "409": HTTPError409,
-            "500": HTTPError500,
-            "502": HTTPError502,
+            400: HTTPError400,
+            403: HTTPError403,
+            404: HTTPError404,
+            409: HTTPError409,
+            500: HTTPError500,
+            502: HTTPError502,
         }
         return exceptions[code]
 
-    # TODO - Add more functionality to Python API
-    # TODO - Finish testing the API

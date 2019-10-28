@@ -28,3 +28,11 @@ class HTTPError500(HTTPError):
 
 class HTTPError502(HTTPError):
     pass
+
+
+class UserNotFoundError(Exception):
+    pass
+
+
+class GroupNotFoundError(Exception):
+    pass
