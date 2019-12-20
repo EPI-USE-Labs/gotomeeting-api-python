@@ -4,45 +4,51 @@ from typing import Dict
 
 class UserResponse:
 
-    def __init__(self, first_name, last_name, email, group_id, status, organizer_key, products,
-                 max_num_attendees_allowed):
+    def __init__(self, key, first_name, last_name, email, admin, locale, license_keys, group_key, group_name, products,
+                 status):
+        self.key = key
         self.first_name = first_name
         self.last_name = last_name
         self.email = email
-        self.group_id = group_id
-        self.status = status
-        self.organizer_key = organizer_key
+        self.group_key = group_key
+        self.group_name = group_name
+        self.locale = locale
+        self.license_keys = license_keys
         self.products = products
-        self. max_num_attendees_allowed = max_num_attendees_allowed
+        self.admin = admin
+        self.status = status
 
     @classmethod
     def create_from_dict(cls, user_data: Dict):
-        first_name = user_data["firstName"]
-        last_name = user_data["lastName"]
-        email = user_data["email"]
-        group_id = user_data["groupId"]
-        status = user_data["status"]
-        organizer_key = user_data["organizerKey"]
-        try:
-            products = user_data["products"]
-        except KeyError:
-            products = ""
-        max_num_attendees_allowed = user_data["maxNumAttendeesAllowed"]
+        key = user_data.get("key", None)
+        first_name = user_data.get("firstName", None)
+        last_name = user_data.get("lastName", None)
+        email = user_data.get("email", None)
+        locale = user_data.get("locale", None)
+        license_keys = user_data.get("licenseKeys", None)
+        group_key = user_data.get("groupKey", None)
+        group_name = user_data.get("groupName", None)
+        admin = user_data.get("admin", False)
+        products = user_data.get("products", None)
+        status = user_data.get("status", None)
 
-        return cls(first_name=first_name, last_name=last_name, email=email, group_id=group_id, status=status,
-                   organizer_key=organizer_key, products=products,
-                   max_num_attendees_allowed=max_num_attendees_allowed)
+        return cls(key=key, first_name=first_name, last_name=last_name, email=email, admin=admin, locale=locale,
+                   license_keys=license_keys, group_key=group_key, group_name=group_name, products=products,
+                   status=status)
 
     def to_dict(self) -> Dict:
         user = {
+            "key": self.key,
             "first_name": self.first_name,
             "last_name": self.last_name,
             "email": self.email,
-            "group_id": self.group_id,
-            "status": self.status,
-            "organizer_key": self.organizer_key,
+            "group_key": self.group_key,
+            "group_name": self.group_name,
+            "locale": self.locale,
+            "license_keys": self.license_keys,
             "products": self.products,
-            "max_num_attendees_allowed": self.max_num_attendees_allowed
+            "admin": self.admin,
+            "status": self.status
         }
 
         return user
@@ -50,31 +56,27 @@ class UserResponse:
 
 class GroupResponse:
 
-    def __init__(self, group_key, group_name, parent_key, status, num_organizers):
-        self.group_key = group_key
-        self.group_name = group_name
-        self.parent_key = parent_key
-        self.status = status
-        self. num_organizers = num_organizers
+    def __init__(self, key, name, user_keys, total_member_count):
+        self.key = key
+        self.name = name
+        self.user_keys = user_keys
+        self.total_member_count = total_member_count
 
     @classmethod
     def create_from_dict(cls, group_data: Dict):
-        group_key = group_data["groupkey"]
-        group_name = group_data["groupName"]
-        parent_key = group_data["parentKey"]
-        status = group_data["status"]
-        num_organizers = group_data["numOrganizers"]
+        key = group_data.get("groupKey", None)
+        name = group_data.get("groupName", None)
+        user_keys = group_data.get("userKeys", None)
+        total_member_count = group_data.get("totalMemberCount", None)
 
-        return cls(group_key=group_key, group_name=group_name, parent_key=parent_key, status=status,
-                   num_organizers=num_organizers)
+        return cls(key=key, name=name, user_keys=user_keys, total_member_count=total_member_count)
 
     def to_dict(self) -> Dict:
         group = {
-            "group_key": self.group_key,
-            "group_name": self.group_name,
-            "parent_key": self.parent_key,
-            "status": self.status,
-            "num_organizers": self.num_organizers
+            "key": self.key,
+            "name": self.name,
+            "user_keys": self.user_keys,
+            "total_member_count": self.total_member_count
         }
 
         return group

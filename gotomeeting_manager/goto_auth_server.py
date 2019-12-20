@@ -26,6 +26,7 @@ def start_server():
     server.start()
     print('server started')
 
+
 def stop_server():
     global server
     server.shutdown()

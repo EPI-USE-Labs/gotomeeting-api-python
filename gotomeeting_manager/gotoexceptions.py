@@ -1,7 +1,3 @@
-class CredentialError(Exception):
-    pass
-
-
 class HTTPError(Exception):
     pass
 
@@ -35,4 +31,20 @@ class UserNotFoundError(Exception):
 
 
 class GroupNotFoundError(Exception):
+    pass
+
+
+class CredentialError(Exception):
+    pass
+
+
+class InvalidFilterError(Exception):
+    pass
+
+
+class UserExistsError(Exception):
+    pass
+
+
+class EmptyUpdateParametersError(Exception):
     pass

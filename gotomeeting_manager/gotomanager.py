@@ -9,9 +9,10 @@ import os
 from flask import Flask, escape, request
 import webbrowser
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
 from gotomeeting_manager.gotoexceptions import CredentialError, HTTPError400, HTTPError403, HTTPError404, \
-    HTTPError409, HTTPError500, HTTPError502, UserNotFoundError, GroupNotFoundError
+    HTTPError409, HTTPError500, HTTPError502, UserNotFoundError, GroupNotFoundError, UserExistsError, \
+    EmptyUpdateParametersError
 
 from gotomeeting_manager.goto_auth_server import AuthServerThread
 from gotomeeting_manager.gotoresponses import UserResponse, GroupResponse
@@ -20,9 +21,11 @@ from gotomeeting_manager.gotoresponses import UserResponse, GroupResponse
 class Manager:
 
     _config = {
+        "organizer_key": str,
+        "account_key": str,
         "access_token": str,
         "refresh_token": str,
-        "last_refreshed": str
+        "last_refreshed": str,
     }
     _config_path: str
 
@@ -136,6 +139,8 @@ class Manager:
         if r.status_code != 200:
             raise self._manage_exceptions(r.status_code)(r.text)
 
+        self._config["account_key"] = r.json()["account_key"]
+        self._config["organizer_key"] = r.json()["organizer_key"]
         self._config["access_token"] = r.json()["access_token"]
         self._config["refresh_token"] = r.json()["refresh_token"]
         self._config["last_refreshed"] = datetime.datetime.now().strftime("%m/%d/%Y, %H:%M:%S")
@@ -177,26 +182,138 @@ class Manager:
             if r.status_code != 200:
                 raise self._manage_exceptions(r.status_code)(r.text)
 
+            self._config["account_key"] = r.json()["account_key"]
+            self._config["organizer_key"] = r.json()["organizer_key"]
             self._config["access_token"] = r.json()["access_token"]
             self._config["refresh_token"] = r.json()["refresh_token"]
             self._config["last_refreshed"] = datetime.datetime.now().strftime("%m/%d/%Y, %H:%M:%S")
 
             self._dump_config()
 
+    # API CALLS
+
+    # Additional Functions
+########################################################################################################################
+    @staticmethod
+    def _create_filter_expression(**kwargs):
+        # TODO: Finish filter method
+        filter_list = []
+        for key, value in kwargs.items():
+            filter_list.append(f"({key}=\"(?i){value}\")")
+
+        filter_expression = " & ".join(filter_list)
+
+        return filter_expression
+
+    def get_license_codes(self) -> Dict:
+        self._refresh_tokens()
+
+        base_url = f"https://api.getgo.com/admin/rest/v1/accounts/{self._config['account_key']}/licenses"
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": self._config["access_token"]
+        }
+
+        r = requests.get(url=base_url, headers=headers)
+
+        license_dict = {}
+
+        for license_type in r.json()["results"]:
+            if len(license_type["products"]) == 2:
+                license_type["products"].remove("G2M")
+                license_dict.update({license_type["products"][0]: license_type["key"]})
+            else:
+                license_dict.update({license_type["products"][0]: license_type["key"]})
+
+        return license_dict
+
+    def get_corresponding_product_licenses(self, products: List[str]) -> List:
+
+        self._refresh_tokens()
+
+        invalid_product_flag = False
+
+        all_licenses = self.get_license_codes()
+
+        for product in products:
+            if product not in all_licenses.keys():
+                invalid_product_flag = True
+
+        assert invalid_product_flag is False, "Invalid product specified, or no licenses for specified product exist"
+
+        if ("G2T" in products) or ("G2W" in products):
+            products.remove("G2M")
+
+        product_licenses = [all_licenses[product] for product in products]
+
+        return product_licenses
+
+    # Users
+########################################################################################################################
+    def get_users(self, page_size: int = 25, offset: int = 0,  filter_values: Optional[Dict] = None):
+
+        self._refresh_tokens()
+
+        base_url = f"https://api.getgo.com/admin/rest/v1/accounts/{self._config['account_key']}/users"
+
+        headers = {
+            "Accept": "application/json",
+            "Authorization": self._config["access_token"],
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+
+        parameters = {
+            "pageSize": page_size,
+            "offset": offset
+        }
+
+        if filter_values is not None:
+            parameters.update({"filter": self._create_filter_expression(**filter_values)})
+
+        r = requests.get(url=base_url, headers=headers, params=parameters)
+
+        if r.status_code == 404:
+            raise UserNotFoundError
+
+        if r.status_code != 200:
+            raise self._manage_exceptions(r.status_code)(r.text)
+
+        results = r.json().get("results", None)
+
+        if results is None:
+            raise UserNotFoundError
+
+        users = []
+
+        for response in results:
+            users.append(UserResponse.create_from_dict(user_data=response))
+
+        return users
+
     def create_user(self, first_name: str, last_name: str, email: str,
-                    product: str = "G2M") -> Optional[UserResponse]:
+                    products: Optional[List[str]] = None) -> List[UserResponse]:
+
         """
         Create a user
         :param first_name: The user's first name
         :param last_name: The user's last name
         :param email: The user's email
-        :param product: Optional list containing all the products to assign to the user. Defaults to "G2M" only
+        :param products: Optional list containing all the products to assign to the user. Defaults to "G2M" only
         :return:
         """
 
+        if products is None:
+            products = ["G2M"]
+
+        assert products != "", "No product specified"
+
         self._refresh_tokens()
 
-        base_url = "https://api.getgo.com/G2M/rest/organizers"
+        licenses_to_assign = self.get_corresponding_product_licenses(products=products)
+
+        base_url = f"https://api.getgo.com/admin/rest/v1/accounts/{self._config['account_key']}/users"
 
         headers = {
             "Content-Type": "application/json",
@@ -205,82 +322,81 @@ class Manager:
         }
 
         data = {
-            "organizerEmail": email,
+            "email": email,
             "firstName": first_name,
             "lastName": last_name,
-            "productType": product
+            "licenseKeys": licenses_to_assign
         }
 
         r = requests.post(url=base_url, headers=headers, json=data)
 
-        if r.status_code != 201:
+        if r.status_code == 409:
+            raise UserExistsError
+
+        if r.status_code != 200:
             raise self._manage_exceptions(r.status_code)(r.text)
 
-        try:
-            key = r.json()[0]["key"]
-        except KeyError:
-            return None
+        user_key = r.json()["key"]
 
-        user = self.get_user_by_key(key=key)
+        user = self.get_users(filter_values={"key": user_key})
+
         return user
 
-    def get_user_by_email(self, email: str) -> UserResponse:
+    def update_user(self, user_key: str, email: str, products: Optional[List[str]] = None, **kwargs) -> List[UserResponse]:
 
-        self._refresh_tokens()
-
-        base_url = "https://api.getgo.com/G2M/rest/organizers"
-        headers = {
-            "Accept": "application/json",
-            "Authorization": self._config["access_token"]
-        }
         parameters = {
             "email": email
         }
+        print(parameters)
 
-        r = requests.get(url=base_url, headers=headers, params=parameters)
+        if products is not None:
+            licenses_to_assign = self.get_corresponding_product_licenses(products=products)
+            parameters.update({"licenseKeys": licenses_to_assign})
+        elif not kwargs:
+            raise EmptyUpdateParametersError
 
-        if r.status_code == 404:
-            raise UserNotFoundError
+        parameters.update(**kwargs)
 
-        if r.status_code != 200:
-            raise self._manage_exceptions(r.status_code)(r.text)
-
-        return UserResponse.create_from_dict(r.json()[0])
-
-    def get_user_by_key(self, key: str) -> UserResponse:
-
-        self._refresh_tokens()
-
-        base_url = f"https://api.getgo.com/G2M/rest/organizers/{key}"
+        base_url = f"https://api.getgo.com/admin/rest/v1/accounts/{self._config['account_key']}/users/{user_key}"
 
         headers = {
+            "Content-Type": "application/json",
             "Accept": "application/json",
             "Authorization": self._config["access_token"]
         }
+        print(parameters)
 
-        r = requests.get(url=base_url, headers=headers)
-
-        if r.status_code == 404:
-            raise UserNotFoundError
+        r = requests.put(url=base_url, headers=headers, json=parameters)
 
         if r.status_code != 200:
             raise self._manage_exceptions(r.status_code)(r.text)
 
-        return UserResponse.create_from_dict(r.json()[0])
+        user = self.get_users(filter_values={"key": user_key})
 
-    def get_all_users(self) -> List[UserResponse]:
+        return user
+
+    # GROUPS
+########################################################################################################################
+    def get_groups(self, page_size: int = 25, offset: int = 0,
+                   filter_values: Optional[Dict] = None) -> List[GroupResponse]:
+
         self._refresh_tokens()
 
-        base_url = "https://api.getgo.com/G2M/rest/organizers"
+        base_url = f"https://api.getgo.com/admin/rest/v1/accounts/{self._config['account_key']}/groups"
 
         headers = {
             "Accept": "application/json",
-            "Authorization": self._config["access_token"]
+            "Authorization": self._config["access_token"],
+            "Content-Type": "application/x-www-form-urlencoded"
         }
 
         parameters = {
-            "email": ""
+            "pageSize": page_size,
+            "offset": offset
         }
+
+        if filter_values is not None:
+            parameters.update({"filter": self._create_filter_expression(**filter_values)})
 
         r = requests.get(url=base_url, headers=headers, params=parameters)
 
@@ -290,28 +406,10 @@ class Manager:
         if r.status_code != 200:
             raise self._manage_exceptions(r.status_code)(r.text)
 
-        users = []
+        results = r.json().get("results", None)
 
-        for response in r.json():
-            users.append(UserResponse.create_from_dict(user_data=response))
-
-        return users
-
-    def get_groups(self) -> List[GroupResponse]:
-
-        self._refresh_tokens()
-
-        base_url = "https://api.getgo.com/G2M/rest/groups"
-
-        headers = {
-            "Accept": "application/json",
-            "Authorization": self._config["access_token"]
-        }
-
-        r = requests.get(url=base_url, headers=headers)
-
-        if r.status_code != 200:
-            raise self._manage_exceptions(r.status_code)(r.text)
+        if results is None:
+            raise GroupNotFoundError
 
         groups = []
 
@@ -320,6 +418,85 @@ class Manager:
 
         return groups
 
+########################################################################################################################
+    # DEPRECATED
+    # def get_user_by_key(self, key: str) -> UserResponse:
+    #
+    #     self._refresh_tokens()
+    #
+    #     base_url = f"https://api.getgo.com/admin/rest/v1/accounts/{self._config['account_key']}/users"
+    #
+    #     headers = {
+    #         "Accept": "application/json",
+    #         "Authorization": self._config["access_token"],
+    #         "Content-Type": "application/x-www-form-urlencoded"
+    #     }
+    #
+    #     r = requests.get(url=base_url, headers=headers)
+    #
+    #     if r.status_code == 404:
+    #         raise UserNotFoundError
+    #
+    #     if r.status_code != 200:
+    #         raise self._manage_exceptions(r.status_code)(r.text)
+    #
+    #     return UserResponse.create_from_dict(r.json()[0])
+
+    # def get_current_user(self) -> UserResponse:
+    #
+    #     self._refresh_tokens()
+    #
+    #     base_url = f"https://api.getgo.com/admin/rest/v1/me"
+    #
+    #     headers = {
+    #         "Accept": "application/json",
+    #         "Authorization": self._config["access_token"],
+    #         "Content-Type": "application/x-www-form-urlencoded"
+    #     }
+    #
+    #     r = requests.get(url=base_url, headers=headers)
+    #
+    #     if r.status_code == 404:
+    #         raise UserNotFoundError
+    #
+    #     if r.status_code != 200:
+    #         raise self._manage_exceptions(r.status_code)(r.text)
+    #
+    #     return UserResponse.create_from_dict(r.json())
+
+        # DEPRECATED
+    # def get_user_by_email(self, email: str) -> UserResponse:
+    #
+    #     self._refresh_tokens()
+    #
+    #     base_url = f"https://api.getgo.com/admin/rest/v1/accounts/{self._config['account_key']}/users"
+    #
+    #     headers = {
+    #         "Accept": "application/json",
+    #         "Authorization": self._config["access_token"],
+    #         "Content-Type": "application/x-www-form-urlencoded"
+    #     }
+    #
+    #     parameters = {
+    #         "filter": self._create_filter_expression(email=email)
+    #     }
+    #
+    #     r = requests.get(url=base_url, headers=headers, params=parameters)
+    #
+    #     if r.status_code == 404:
+    #         raise UserNotFoundError
+    #
+    #     if r.status_code != 200:
+    #         raise self._manage_exceptions(r.status_code)(r.text)
+    #
+    #     results = r.json().get("results", None)
+    #
+    #     if results is None:
+    #         raise UserNotFoundError
+    #
+    #     return UserResponse.create_from_dict(results[0])
+
+    # DEPRECATED
     def create_user_in_group(self, first_name: str, last_name: str, email: str, group_name: str,
                              product: str = "G2M") -> UserResponse:
         self._refresh_tokens()
@@ -327,8 +504,8 @@ class Manager:
         groups = self.get_groups()
         group_key = None
         for group in groups:
-            if group.group_name == group_name:
-                group_key = group.group_key
+            if group.name == group_name:
+                group_key = group.key
 
         if group_key is None:
             raise GroupNotFoundError
